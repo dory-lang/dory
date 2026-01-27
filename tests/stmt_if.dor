@@ -1,0 +1,36 @@
+
+/*
+ * stmt_if.dor
+ * if / elseif / else examples
+ */
+
+procedure main()
+
+   local n, lFlag, cMsg
+
+   n := 2
+   if n == 1
+      printf( "one" )
+   elseif n == 2
+      printf( "two" )
+   else
+      printf( "other" )
+   endif
+
+   lFlag := .t.
+   if lFlag
+      printf( "flag is true" )
+   else
+      printf( "flag is false" )
+   endif
+
+   cMsg := "hello"
+   if cMsg == "hi"
+      printf( "short" )
+   elseif cMsg == "hello"
+      printf( "long" )
+   else
+      printf( "unknown" )
+   endif
+
+return 

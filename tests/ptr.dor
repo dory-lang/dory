@@ -1,0 +1,29 @@
+/*
+ * ptr.prg - pointer tests
+ *
+ * dory ptr.prg --bin ptr
+ */
+
+function main()
+
+   local x, p, pp, y, q, z, r
+
+   x := 41
+   p := &x
+   printf( peek( p ) )
+   poke( p, 42 )
+   printf( x )
+
+   pp := &p
+   printf( peek( peek( pp ) ) )
+
+   y := 9
+   q := &y
+   printf( *q )
+
+   z := 1
+   r := &z
+   *r := 123
+   printf( z )
+   
+return 0

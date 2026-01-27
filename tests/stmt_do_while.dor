@@ -1,0 +1,39 @@
+/*
+ * stmt_do_while.dor
+ * do while / exit / loop examples
+ */
+
+procedure main()
+
+   local n
+
+   n := 0
+   do while n < 3
+      n := n + 1
+      if n == 2
+         loop
+      endif
+      printf( n )
+   enddo
+
+   n := 0
+   do while n < 10
+      n := n + 1
+      if n == 4
+         exit
+      endif
+      printf( n )
+   enddo
+
+return
+
+ast.cpp
+ast.hpp
+codegen.cpp
+codegen.hpp
+main.cpp
+sema.cpp
+sema.hpp
+types.cpp
+types.hpp
+domk2.c

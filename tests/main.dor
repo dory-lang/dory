@@ -1,0 +1,12 @@
+/*
+ * dory main.prg --bin main
+ */
+
+PROCEDURE Main()
+
+   LOCAL cText 
+   
+   cText := 1 + 1
+   printf( cText )
+   
+RETURN 

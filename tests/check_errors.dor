@@ -1,0 +1,31 @@
+/*
+ * check_errors.dor
+ * How to find errors (examples)
+ */
+
+procedure main()
+
+   /* 1) Parser / AST check
+    * Run: dory stmt_if.dor --dump
+    * If this prints a Program/Procedure tree, parsing succeeded.
+    */
+
+   /* 2) AST pretty print
+    * Run: dory stmt_if.dor --ast
+    * This prints a normalized program view.
+    */
+
+   /* 3) Codegen support check
+    * If you see: "error: codegen failed"
+    * then the backend does not support some AST nodes yet.
+    * Check: src/compiler/codegen.cpp -> codegen_stmt()
+    * (only some statements are implemented there).
+    */
+
+   /* 4) Semantic errors
+    * If you see: "Semantic error at line ..."
+    * then sema rejected the program.
+    * Check: src/compiler/sema.cpp
+    */
+
+return

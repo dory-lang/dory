@@ -1,0 +1,19 @@
+# Dory
+bin
+lib
+tmp
+*.a
+*.ast
+*.bak
+*.dll
+*.exe
+*.ll
+*.o
+*.obj
+*.so
+
+# BNFC generated files
+src/bnfc/*
+#!src/bnfc/
+#!src/bnfc/dory.cf
+#!src/bnfc/*.sh

@@ -1,0 +1,32 @@
+/*
+ * stmt_do_case.dor
+ * do case / case / otherwise examples
+ */
+
+procedure main()
+
+   local n, cMsg
+
+   n := 3
+   do case
+   case n == 1
+      printf( "one" )
+   case n == 2
+      printf( "two" )
+   case n == 3
+      printf( "three" )
+   otherwise
+      printf( "other" )
+   endcase
+
+   cMsg := "hello"
+   do case
+   case cMsg == "hi"
+      printf( "short" )
+   case cMsg == "hello"
+      printf( "long" )
+   otherwise
+      printf( "unknown" )
+   endcase
+
+return

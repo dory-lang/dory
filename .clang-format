@@ -1,0 +1,39 @@
+# .clang-format
+BasedOnStyle: LLVM
+
+IndentWidth: 3
+TabWidth: 3
+UseTab: Never
+
+BreakBeforeBraces: Allman
+
+# Styl: if( ... ), for( ... ), foo( bar )
+SpaceBeforeParens: Never
+SpacesInParentheses: true
+SpaceInEmptyParentheses: false
+
+# ( void ), [ 5 ], { 0 }
+SpacesInSquareBrackets: true
+SpacesInBracedLists: true
+
+PointerAlignment: Right
+
+AlignConsecutiveAssignments: Consecutive
+AlignConsecutiveDeclarations: Consecutive
+
+ColumnLimit: 120
+
+SpacesInCStyleCastParentheses: true
+SpaceAfterCStyleCast: true
+
+# Nie składaj krótkich funkcji/bloków do jednej linii
+AllowShortFunctionsOnASingleLine: None
+AllowShortBlocksOnASingleLine: Never
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+
+IndentPPDirectives: AfterHash
+PPIndentWidth: 3
+
+# Wyrównanie makr #define
+AlignConsecutiveMacros: Consecutive

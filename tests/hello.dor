@@ -1,0 +1,13 @@
+
+FUNCTION Main()
+
+   LOCAL cName := Msg()
+
+   Printf( cName )
+
+RETURN NIL
+
+FUNCTION Msg()
+RETURN "Hello Dory"
+
+
