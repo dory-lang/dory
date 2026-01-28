@@ -1,7 +1,6 @@
 /*
  * ptr.dor - pointer tests
  *
- * dory ptr.prg --bin ptr
  */
 
 function main()
