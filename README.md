@@ -1,7 +1,7 @@
 # Dory
 
 Dory is an experimental compiler being created with simple syntax and easy access to C libraries (Language Bindings) in mind.
-It is inspired by C89/C90 and xBase. Dory is dynamically typed, has a simple syntax, and its own compiler based on LLVM.
+It is inspired by C89/C90 and [xBase](https://en.wikipedia.org/wiki/XBase). Dory is dynamically typed, has a simple syntax, and its own compiler based on [LLVM](https://www.llvm.org/).
 The repo also includes a runtime/VM and helper tools.
 
 ## What exists now

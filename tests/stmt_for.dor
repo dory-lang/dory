@@ -1,0 +1,27 @@
+/*
+ * stmt_for.dor
+ * for / to / step / exit / loop
+ */
+
+procedure main()
+
+   local nLimit, nSum, cMsg, i
+
+   nLimit := 10
+   nSum   := 0
+   cMsg   := "start"
+
+   for i := 1 to nLimit step 2
+      printf( cMsg )
+      if i = 5
+         loop
+      endif
+
+      nSum := nSum + i
+
+      if nSum > 20
+         exit
+      endif
+   endfor
+
+return

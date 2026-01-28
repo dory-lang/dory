@@ -1,0 +1,21 @@
+/*
+ * array.dor
+ * Array literals, indexing, assignment, and nested arrays.
+ */
+
+procedure main()
+
+   local aText, aNested
+
+   aText := { "one", "two", "three" }
+   printf( aText[ 1 ] )
+   printf( aText[ 2 ] )
+   printf( aText[ 3 ] )
+
+   aText[ 2 ] := "TWO"
+   printf( aText[ 2 ] )
+
+   aNested := { 100, 200, { "this", { "seems", "to", { "work", "so", "well" } } } }
+   printf( aNested[ 3 ][ 2 ][ 3 ][ 1 ] )
+
+return

@@ -1,0 +1,38 @@
+/*
+ * stmt_for_each.dor
+ * for each / in / exit / loop / descend examples
+ */
+
+procedure main()
+
+   // main: Demonstrates FOR EACH syntax and fall-through control flow.
+   local aItems, cText, nIdx, cItem, cChar
+
+   aItems := { "one", "two", "three" }
+   cText  := "abcd"
+
+   printf( "=== BASIC FOR EACH ===" )
+   for each cItem in aItems
+      printf( cItem )
+
+      if cItem = "two"
+         loop
+      endif
+
+      if cItem = "three"
+         exit
+      endif
+   endfor
+
+   printf( "=== MULTI-VAR FOR EACH ===" )
+   for each cItem, cChar in aItems, cText
+      printf( cItem )
+      printf( cChar )
+   endfor
+
+   printf( "=== DESCEND FOR EACH ===" )
+   for each cItem in aItems descend
+      printf( cItem )
+   endfor
+
+return

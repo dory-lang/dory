@@ -3,6 +3,7 @@
  */
 
 #include "doapi.h"
+#include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -281,6 +282,255 @@ void do_retptr( DO_VM *pVm, void *pValue )
    pVm->oRet.u.pValue    = pValue;
 }
 
+// do_retarray: Returns an array value.
+void do_retarray( DO_VM *pVm, DO_ARRAY *pArr )
+{
+   if( !pVm )
+      return;
+   pVm->oRet.nType       = DO_IT_ARRAY;
+   pVm->oRet.nReserved   = 0;
+   pVm->oRet.pStructType = NULL;
+   pVm->oRet.u.pValue    = pArr;
+}
+
+/* ----------------------------------------------------------------------------
+   Array helpers
+   ------------------------------------------------------------------------- */
+// do_array_new: Creates a new array container.
+DO_ARRAY *do_array_new( int64_t nLen )
+{
+   if( nLen < 0 )
+      nLen = 0;
+
+   DO_ARRAY *pArr = ( DO_ARRAY * ) do_xgrab( sizeof( DO_ARRAY ) );
+   pArr->nLen     = nLen;
+   pArr->pItems   = NULL;
+
+   if( nLen > 0 )
+   {
+      pArr->pItems = ( DO_ITEM * ) do_xgrab( sizeof( DO_ITEM ) * ( size_t ) nLen );
+      memset( pArr->pItems, 0, sizeof( DO_ITEM ) * ( size_t ) nLen );
+   }
+
+   return pArr;
+}
+
+// do_array_at: Returns a 1-based element pointer or NULL if out of range.
+DO_ITEM *do_array_at( DO_ARRAY *pArr, int64_t nIdx1Based )
+{
+   if( !pArr || nIdx1Based < 1 || nIdx1Based > pArr->nLen )
+      return NULL;
+   return &pArr->pItems[ nIdx1Based - 1 ];
+}
+
+// do_array_len: Returns array length.
+int64_t do_array_len( DO_ARRAY *pArr )
+{
+   return pArr ? pArr->nLen : 0;
+}
+
+// do_array_acopy: Shallow copy from pSrc into pDst.
+void do_array_acopy( DO_ARRAY *pDst, int64_t nDstPos, const DO_ARRAY *pSrc, int64_t nSrcPos, int64_t nCount )
+{
+   if( !pDst || !pSrc || nCount <= 0 )
+      return;
+
+   if( nDstPos < 1 || nSrcPos < 1 )
+      return;
+
+   int64_t nDstEnd = nDstPos + nCount - 1;
+   int64_t nSrcEnd = nSrcPos + nCount - 1;
+   if( nDstEnd > pDst->nLen || nSrcEnd > pSrc->nLen )
+      return;
+
+   for( int64_t i = 0; i < nCount; ++i )
+   {
+      pDst->pItems[ nDstPos - 1 + i ] = pSrc->pItems[ nSrcPos - 1 + i ];
+   }
+}
+
+// do_array_aclone: Deep clone for nested arrays.
+DO_ARRAY *do_array_aclone( const DO_ARRAY *pSrc )
+{
+   if( !pSrc )
+      return NULL;
+
+   DO_ARRAY *pDst = do_array_new( pSrc->nLen );
+   for( int64_t i = 0; i < pSrc->nLen; ++i )
+   {
+      DO_ITEM oItem = pSrc->pItems[ i ];
+      if( DO_KIND_OF( oItem.nType ) == DO_K_ARRAY && oItem.u.pValue )
+      {
+         DO_ARRAY *pChild = do_array_aclone( ( const DO_ARRAY * ) oItem.u.pValue );
+         oItem.u.pValue   = pChild;
+      }
+      pDst->pItems[ i ] = oItem;
+   }
+   return pDst;
+}
+
+static int do_item_equal_deep( const DO_ITEM *pLeft, const DO_ITEM *pRight )
+{
+   if( !pLeft || !pRight )
+      return 0;
+
+   DO_KIND kLeft  = DO_KIND_OF( pLeft->nType );
+   DO_KIND kRight = DO_KIND_OF( pRight->nType );
+   if( kLeft != kRight )
+      return 0;
+
+   switch( kLeft )
+   {
+   case DO_K_NIL:
+      return 1;
+   case DO_K_I32:
+   case DO_K_I64:
+   case DO_K_LOGICAL:
+      return pLeft->u.nValue == pRight->u.nValue;
+   case DO_K_STRING:
+      if( pLeft->u.szValue == NULL || pRight->u.szValue == NULL )
+         return pLeft->u.szValue == pRight->u.szValue;
+      return strcmp( pLeft->u.szValue, pRight->u.szValue ) == 0;
+   case DO_K_ARRAY:
+      return do_array_equal_deep( ( const DO_ARRAY * ) pLeft->u.pValue, ( const DO_ARRAY * ) pRight->u.pValue );
+   default:
+      return pLeft->u.pValue == pRight->u.pValue;
+   }
+}
+
+// do_array_equal_deep: Deep equality for nested arrays.
+int do_array_equal_deep( const DO_ARRAY *pLeft, const DO_ARRAY *pRight )
+{
+   if( pLeft == pRight )
+      return 1;
+   if( !pLeft || !pRight )
+      return 0;
+   if( pLeft->nLen != pRight->nLen )
+      return 0;
+
+   for( int64_t i = 0; i < pLeft->nLen; ++i )
+   {
+      if( !do_item_equal_deep( &pLeft->pItems[ i ], &pRight->pItems[ i ] ) )
+         return 0;
+   }
+   return 1;
+}
+
+static DO_ARRAY *do_param_array( DO_VM *pVm, int nIdx1Based, int *pOkay )
+{
+   const DO_ITEM *pItem = do_param( pVm, nIdx1Based, DO_IT_ARRAY );
+   if( !pItem )
+   {
+      if( pOkay )
+         *pOkay = 0;
+      return NULL;
+   }
+   if( pOkay )
+      *pOkay = 1;
+   return ( DO_ARRAY * ) pItem->u.pValue;
+}
+
+// ACopy: Shallow copy elements between arrays.
+DO_FUNC( ACOPY )
+{
+   if( !pVm || pVm->nArgc < 2 )
+   {
+      do_err_args( "ACopy" );
+      do_retnil( pVm );
+      return;
+   }
+
+   int       lOkSrc = 0;
+   int       lOkDst = 0;
+   DO_ARRAY *pSrc   = do_param_array( pVm, 1, &lOkSrc );
+   DO_ARRAY *pDst   = do_param_array( pVm, 2, &lOkDst );
+   if( !lOkSrc || !lOkDst || !pSrc || !pDst )
+   {
+      do_err_type( "ACopy", "array", DO_IT_NIL );
+      do_retnil( pVm );
+      return;
+   }
+
+   int     lOkay   = 0;
+   int64_t nSrcPos = 1;
+   int64_t nCount  = 0;
+   int64_t nDstPos = 1;
+
+   if( pVm->nArgc >= 3 )
+   {
+      nSrcPos = do_parni( pVm, 3, &lOkay );
+      if( !lOkay )
+      {
+         do_err_args( "ACopy" );
+         do_retnil( pVm );
+         return;
+      }
+   }
+   if( pVm->nArgc >= 4 )
+   {
+      nCount = do_parni( pVm, 4, &lOkay );
+      if( !lOkay )
+      {
+         do_err_args( "ACopy" );
+         do_retnil( pVm );
+         return;
+      }
+   }
+   if( pVm->nArgc >= 5 )
+   {
+      nDstPos = do_parni( pVm, 5, &lOkay );
+      if( !lOkay )
+      {
+         do_err_args( "ACopy" );
+         do_retnil( pVm );
+         return;
+      }
+   }
+
+   if( nCount <= 0 )
+   {
+      int64_t nSrcAvail = pSrc->nLen - nSrcPos + 1;
+      int64_t nDstAvail = pDst->nLen - nDstPos + 1;
+      nCount            = nSrcAvail < nDstAvail ? nSrcAvail : nDstAvail;
+   }
+
+   do_array_acopy( pDst, nDstPos, pSrc, nSrcPos, nCount );
+   do_retarray( pVm, pDst );
+}
+
+// AClone: Deep clone nested arrays.
+DO_FUNC( ACLONE )
+{
+   int       lOk  = 0;
+   DO_ARRAY *pSrc = do_param_array( pVm, 1, &lOk );
+   if( !lOk || !pSrc )
+   {
+      do_err_type( "AClone", "array", DO_IT_NIL );
+      do_retnil( pVm );
+      return;
+   }
+
+   DO_ARRAY *pNew = do_array_aclone( pSrc );
+   do_retarray( pVm, pNew );
+}
+
+// AEqual: Deep equality for arrays.
+DO_FUNC( AEQUAL )
+{
+   int       lOk1   = 0;
+   int       lOk2   = 0;
+   DO_ARRAY *pLeft  = do_param_array( pVm, 1, &lOk1 );
+   DO_ARRAY *pRight = do_param_array( pVm, 2, &lOk2 );
+   if( !lOk1 || !lOk2 )
+   {
+      do_err_type( "AEqual", "array", DO_IT_NIL );
+      do_retl( pVm, 0 );
+      return;
+   }
+
+   do_retl( pVm, do_array_equal_deep( pLeft, pRight ) ? 1 : 0 );
+}
+
 /* ----------------------------------------------------------------------------
    ------------------------------------------------------------------------- */
 // do_err_args: Reports invalid arguments.
@@ -294,6 +544,13 @@ void do_err_type( const char *szFuncName, const char *szExpected, DO_TYPE nIt )
 {
    fprintf( stderr, "Error: %s: expected %s, got type %u\n", szFuncName ? szFuncName : "<?>",
             szExpected ? szExpected : "<?>", DO_KIND( nIt ) );
+}
+
+// do_err_bounds: Reports out-of-range index for arrays.
+void do_err_bounds( const char *szFuncName, int64_t nIndex, int64_t nLen )
+{
+   fprintf( stderr, "Error: %s: index %" PRId64 " out of range (1..%" PRId64 ")\n", szFuncName ? szFuncName : "<?>",
+            nIndex, nLen );
 }
 
 // TODO:

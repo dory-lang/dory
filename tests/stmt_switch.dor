@@ -1,0 +1,39 @@
+/*
+ * stmt_switch.dor
+ * switch / case / exit / otherwise examples
+ */
+
+procedure main()
+
+   local nMode
+
+   nMode := 2
+
+   switch nMode
+      case 1
+         printf( "case 1" )
+         exit
+
+      case 2
+         printf( "case 2" )
+         // Fall-through: no EXIT here.
+
+      case 3
+         printf( "case 3" )
+         exit
+
+      otherwise
+         printf( "otherwise" )
+   endswitch
+
+   nMode := 99
+
+   switch nMode
+      case 1
+         printf( "case 1 (second)" )
+         exit
+      otherwise
+         printf( "otherwise (second)" )
+   endswitch
+
+return

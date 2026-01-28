@@ -262,6 +262,7 @@ static inline DO_TYPE do_make_memo( DO_TYPE nIt )
 
 typedef struct _DO_ITEM        DO_ITEM;
 typedef struct _DO_STRUCT_TYPE DO_STRUCT_TYPE;
+typedef struct _DO_ARRAY       DO_ARRAY;
 
 struct _DO_STRUCT_TYPE
 {
@@ -282,6 +283,12 @@ struct _DO_ITEM
       const char *szValue;
       void       *pValue;
    } u;
+};
+
+struct _DO_ARRAY
+{
+   int64_t  nLen;
+   DO_ITEM *pItems;
 };
 
 struct _DO_VM
@@ -316,8 +323,17 @@ void do_retl( DO_VM *pVm, int bValue );
 void do_retni( DO_VM *pVm, int64_t nValue );
 void do_retc( DO_VM *pVm, const char *szValue );
 void do_retptr( DO_VM *pVm, void *pValue );
+void do_retarray( DO_VM *pVm, DO_ARRAY *pArr );
+
+DO_ARRAY *do_array_new( int64_t nLen );
+DO_ITEM  *do_array_at( DO_ARRAY *pArr, int64_t nIdx1Based );
+int64_t   do_array_len( DO_ARRAY *pArr );
+void      do_array_acopy( DO_ARRAY *pDst, int64_t nDstPos, const DO_ARRAY *pSrc, int64_t nSrcPos, int64_t nCount );
+DO_ARRAY *do_array_aclone( const DO_ARRAY *pSrc );
+int       do_array_equal_deep( const DO_ARRAY *pLeft, const DO_ARRAY *pRight );
 
 void do_err_args( const char *szFuncName );
 void do_err_type( const char *szFuncName, const char *szExpected, DO_TYPE nIt );
+void do_err_bounds( const char *szFuncName, int64_t nIndex, int64_t nLen );
 
 #endif /* The End DOAPI_H_ */

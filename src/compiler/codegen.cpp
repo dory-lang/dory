@@ -67,6 +67,7 @@ struct CodeGenerator::Impl
    std::map<std::string, llvm::GlobalVariable *> m_StaticLocals;
    std::vector<llvm::BasicBlock *>               m_BreakTargets;
    std::vector<llvm::BasicBlock *>               m_ContinueTargets;
+   llvm::AllocaInst                             *m_ArrayNilTmp = nullptr;
 
    llvm::Type *type_i64()
    {
@@ -90,12 +91,13 @@ struct CodeGenerator::Impl
       return m_TypeDoVm;
    }
 
-   static constexpr int32_t kDoItNil     = 0; /* DO_K_NIL */
-   static constexpr int32_t kDoItPointer = 1; /* DO_K_POINTER */
-   static constexpr int32_t kDoItInt32   = 2; /* DO_K_I32 */
-   static constexpr int32_t kDoItLong    = 3; /* DO_K_I64 */
-   static constexpr int32_t kDoItLogical = 5; /* DO_K_LOGICAL */
-   static constexpr int32_t kDoItString  = 9; /* DO_K_STRING */
+   static constexpr int32_t kDoItNil     = 0;  /* DO_K_NIL */
+   static constexpr int32_t kDoItPointer = 1;  /* DO_K_POINTER */
+   static constexpr int32_t kDoItInt32   = 2;  /* DO_K_I32 */
+   static constexpr int32_t kDoItLong    = 3;  /* DO_K_I64 */
+   static constexpr int32_t kDoItLogical = 5;  /* DO_K_LOGICAL */
+   static constexpr int32_t kDoItString  = 9;  /* DO_K_STRING */
+   static constexpr int32_t kDoItArray   = 11; /* DO_K_ARRAY */
    static constexpr int32_t kDoFlagByRef = 0x00000100;
    static constexpr int32_t kDoKindMask  = 0x000000FF;
 
@@ -423,6 +425,9 @@ struct CodeGenerator::Impl
       llvm::Value *pIsStrLeft  = m_Builder.CreateICmpEQ( pLeftKind, const_i32( kDoItString ), "cmp.isstr.l" );
       llvm::Value *pIsStrRight = m_Builder.CreateICmpEQ( pRightKind, const_i32( kDoItString ), "cmp.isstr.r" );
       llvm::Value *pIsStrBoth  = m_Builder.CreateAnd( pIsStrLeft, pIsStrRight, "cmp.isstr.both" );
+      llvm::Value *pIsArrLeft  = m_Builder.CreateICmpEQ( pLeftKind, const_i32( kDoItArray ), "cmp.isarr.l" );
+      llvm::Value *pIsArrRight = m_Builder.CreateICmpEQ( pRightKind, const_i32( kDoItArray ), "cmp.isarr.r" );
+      llvm::Value *pIsArrBoth  = m_Builder.CreateAnd( pIsArrLeft, pIsArrRight, "cmp.isarr.both" );
 
       llvm::Value *pIsNumLeft =
           m_Builder.CreateOr( m_Builder.CreateICmpEQ( pLeftKind, const_i32( kDoItInt32 ) ),
@@ -450,8 +455,20 @@ struct CodeGenerator::Impl
       llvm::BasicBlock *pNumBB  = llvm::BasicBlock::Create( m_Context, "cmp.num", pFun );
       llvm::BasicBlock *pErrBB  = llvm::BasicBlock::Create( m_Context, "cmp.err", pFun );
       llvm::BasicBlock *pContBB = llvm::BasicBlock::Create( m_Context, "cmp.cont", pFun );
+      llvm::BasicBlock *pArrBB  = nullptr;
 
-      m_Builder.CreateCondBr( pIsStrBoth, pStrBB, pChkBB );
+      if( eKind == CMP_EQ || eKind == CMP_NE )
+      {
+         pArrBB                      = llvm::BasicBlock::Create( m_Context, "cmp.arr", pFun );
+         llvm::BasicBlock *pStrChkBB = llvm::BasicBlock::Create( m_Context, "cmp.strchk", pFun );
+         m_Builder.CreateCondBr( pIsArrBoth, pArrBB, pStrChkBB );
+         m_Builder.SetInsertPoint( pStrChkBB );
+         m_Builder.CreateCondBr( pIsStrBoth, pStrBB, pChkBB );
+      }
+      else
+      {
+         m_Builder.CreateCondBr( pIsStrBoth, pStrBB, pChkBB );
+      }
 
       m_Builder.SetInsertPoint( pChkBB );
       m_Builder.CreateCondBr( pIsNumBoth, pNumBB, pErrBB );
@@ -459,6 +476,21 @@ struct CodeGenerator::Impl
       llvm::Value *pStrItem = nullptr;
       llvm::Value *pNumItem = nullptr;
       llvm::Value *pErrItem = nullptr;
+      llvm::Value *pArrItem = nullptr;
+
+      if( pArrBB )
+      {
+         m_Builder.SetInsertPoint( pArrBB );
+         llvm::Value *pLeftBits  = item_to_i64( pLeft );
+         llvm::Value *pRightBits = item_to_i64( pRight );
+         llvm::Value *pArrBool   = nullptr;
+         if( eKind == CMP_EQ )
+            pArrBool = m_Builder.CreateICmpEQ( pLeftBits, pRightBits, "cmp.eq" );
+         else
+            pArrBool = m_Builder.CreateICmpNE( pLeftBits, pRightBits, "cmp.ne" );
+         pArrItem = make_bool_item( pArrBool );
+         m_Builder.CreateBr( pContBB );
+      }
 
       m_Builder.SetInsertPoint( pStrBB );
       llvm::Value *pLeftBits     = item_to_i64( pLeft );
@@ -533,10 +565,13 @@ struct CodeGenerator::Impl
       m_Builder.CreateBr( pContBB );
 
       m_Builder.SetInsertPoint( pContBB );
-      auto *pPhi = m_Builder.CreatePHI( type_do_item(), 3, "cmptmp" );
+      unsigned nPhi = pArrBB ? 4 : 3;
+      auto    *pPhi = m_Builder.CreatePHI( type_do_item(), nPhi, "cmptmp" );
       pPhi->addIncoming( pStrItem, pStrBB );
       pPhi->addIncoming( pNumItem, pNumBB );
       pPhi->addIncoming( pErrItem, pErrBB );
+      if( pArrBB )
+         pPhi->addIncoming( pArrItem, pArrBB );
       return pPhi;
    }
 
@@ -554,6 +589,105 @@ struct CodeGenerator::Impl
       m_Locals[ szName ]        = pAlloca;
       m_LocalTypes[ szName ]    = pType;
       return pAlloca;
+   }
+
+   llvm::AllocaInst *array_nil_ptr()
+   {
+      if( m_ArrayNilTmp )
+         return m_ArrayNilTmp;
+      if( !m_CurrentFunction )
+         return nullptr;
+      llvm::IRBuilder<> oTmp( &m_CurrentFunction->getEntryBlock(), m_CurrentFunction->getEntryBlock().begin() );
+      m_ArrayNilTmp = oTmp.CreateAlloca( type_do_item(), nullptr, "arr.nil" );
+      oTmp.CreateStore( make_item_const( kDoItNil, const_i64( 0 ) ), m_ArrayNilTmp );
+      return m_ArrayNilTmp;
+   }
+
+   bool get_single_subscript( SubscriptList pList, Expr &oExpr )
+   {
+      if( !pList || pList->kind != SubscriptList_::is_SubscriptListSingle )
+         return false;
+      oExpr                   = pList->u.subscriptListSingle_.expr_;
+      SubscriptListTail pTail = pList->u.subscriptListSingle_.subscriptlisttail_;
+      return ( !pTail || pTail->kind == SubscriptListTail_::is_ListSubscriptTailEmpty );
+   }
+
+   std::vector<Expr> collect_subscripts( SubscriptList pList )
+   {
+      std::vector<Expr> aIdxs;
+      if( !pList || pList->kind != SubscriptList_::is_SubscriptListSingle )
+         return aIdxs;
+
+      aIdxs.push_back( pList->u.subscriptListSingle_.expr_ );
+      SubscriptListTail pTail = pList->u.subscriptListSingle_.subscriptlisttail_;
+      while( pTail && pTail->kind == SubscriptListTail_::is_ListSubscriptTailCons )
+      {
+         aIdxs.push_back( pTail->u.listSubscriptTailCons_.expr_ );
+         pTail = pTail->u.listSubscriptTailCons_.subscriptlisttail_;
+      }
+      return aIdxs;
+   }
+
+   llvm::Value *emit_array_at( llvm::Value *pArrPtr, llvm::Value *pIdxVal )
+   {
+      if( !pArrPtr || !pIdxVal || !m_CurrentFunction )
+         return nullptr;
+
+      llvm::Type          *pArrPtrTy  = llvm::PointerType::get( m_Context, 0 );
+      llvm::Type          *pItemPtrTy = llvm::PointerType::get( m_Context, 0 );
+      llvm::FunctionCallee pAt        = get_rt_func( "do_array_at", pItemPtrTy, { pArrPtrTy, type_i64() } );
+      llvm::FunctionCallee pLen       = get_rt_func( "do_array_len", type_i64(), { pArrPtrTy } );
+      llvm::FunctionCallee pErr       = get_rt_func( "do_err_bounds", llvm::Type::getVoidTy( m_Context ),
+                                                     { llvm::PointerType::get( m_Context, 0 ), type_i64(), type_i64() } );
+      if( !pAt || !pLen || !pErr )
+         return nullptr;
+
+      llvm::Value *pElemPtr = m_Builder.CreateCall( pAt, { pArrPtr, pIdxVal }, "arr.at" );
+      llvm::Value *pIsNull  = m_Builder.CreateICmpEQ(
+          pElemPtr, llvm::ConstantPointerNull::get( llvm::PointerType::get( m_Context, 0 ) ), "arr.null" );
+
+      llvm::Function   *pFun    = m_CurrentFunction;
+      llvm::BasicBlock *pOkBB   = llvm::BasicBlock::Create( m_Context, "arr.ok", pFun );
+      llvm::BasicBlock *pErrBB  = llvm::BasicBlock::Create( m_Context, "arr.err", pFun );
+      llvm::BasicBlock *pContBB = llvm::BasicBlock::Create( m_Context, "arr.cont", pFun );
+      m_Builder.CreateCondBr( pIsNull, pErrBB, pOkBB );
+
+      m_Builder.SetInsertPoint( pErrBB );
+      llvm::Value    *pLenVal       = m_Builder.CreateCall( pLen, { pArrPtr }, "arr.len" );
+      llvm::Constant *pFuncNameBits = const_string_bits( "index" );
+      if( !pFuncNameBits )
+         return nullptr;
+      llvm::Value *pFuncName = llvm::ConstantExpr::getIntToPtr( pFuncNameBits, llvm::PointerType::get( m_Context, 0 ) );
+      m_Builder.CreateCall( pErr, { pFuncName, pIdxVal, pLenVal } );
+      llvm::Value *pNilPtr = array_nil_ptr();
+      if( !pNilPtr )
+         return nullptr;
+      m_Builder.CreateBr( pContBB );
+
+      m_Builder.SetInsertPoint( pOkBB );
+      m_Builder.CreateBr( pContBB );
+
+      m_Builder.SetInsertPoint( pContBB );
+      auto *pPhi = m_Builder.CreatePHI( llvm::PointerType::get( m_Context, 0 ), 2, "arr.ptr" );
+      pPhi->addIncoming( pElemPtr, pOkBB );
+      pPhi->addIncoming( pNilPtr, pErrBB );
+      return pPhi;
+   }
+
+   std::vector<Expr> collect_expr_list( ExprListOpt pList )
+   {
+      std::vector<Expr> aItems;
+      if( pList && pList->kind == ExprListOpt_::is_OptExprListSome )
+      {
+         aItems.push_back( pList->u.optExprListSome_.expr_ );
+         ExprListTail pTail = pList->u.optExprListSome_.exprlisttail_;
+         while( pTail && pTail->kind == ExprListTail_::is_ListExprTailCons )
+         {
+            aItems.push_back( pTail->u.listExprTailCons_.expr_ );
+            pTail = pTail->u.listExprTailCons_.exprlisttail_;
+         }
+      }
+      return aItems;
    }
 
    llvm::Value *codegen_lvalue_ptr( LValue pLVal )
@@ -587,8 +721,82 @@ struct CodeGenerator::Impl
             return nullptr;
          return get_or_create_alloca( szName, type_do_item() );
       }
-      case LValue_::is_LValField:
       case LValue_::is_LValIndex:
+      {
+         std::vector<Expr> aIdxs = collect_subscripts( pLVal->u.lValIndex_.subscriptlist_ );
+         if( aIdxs.empty() )
+            return nullptr;
+
+         llvm::Value *pBasePtr = codegen_lvalue_ptr( pLVal->u.lValIndex_.lvalue_ );
+         if( !pBasePtr )
+            return nullptr;
+         llvm::Value *pBaseItem = m_Builder.CreateLoad( type_do_item(), pBasePtr, "arr" );
+
+         for( size_t i = 0; i < aIdxs.size(); ++i )
+         {
+            llvm::Value *pBaseKind = item_kind( pBaseItem );
+            if( !pBaseKind )
+               return nullptr;
+            llvm::Value *pIsArray = m_Builder.CreateICmpEQ( pBaseKind, const_i32( kDoItArray ), "isarray" );
+
+            llvm::Function   *pFun    = m_CurrentFunction;
+            llvm::BasicBlock *pOkBB   = llvm::BasicBlock::Create( m_Context, "arr.ok", pFun );
+            llvm::BasicBlock *pErrBB  = llvm::BasicBlock::Create( m_Context, "arr.err", pFun );
+            llvm::BasicBlock *pContBB = llvm::BasicBlock::Create( m_Context, "arr.cont", pFun );
+            m_Builder.CreateCondBr( pIsArray, pOkBB, pErrBB );
+
+            llvm::Value *pArrPtr = nullptr;
+
+            m_Builder.SetInsertPoint( pOkBB );
+            llvm::Value *pArrBits = item_to_i64( pBaseItem );
+            if( !pArrBits )
+               return nullptr;
+            pArrPtr = m_Builder.CreateIntToPtr( pArrBits, llvm::PointerType::get( m_Context, 0 ), "arrptr" );
+            m_Builder.CreateBr( pContBB );
+
+            m_Builder.SetInsertPoint( pErrBB );
+            llvm::Type          *pI8PtrTy = llvm::PointerType::get( m_Context, 0 );
+            llvm::FunctionCallee pErr =
+                get_rt_func( "do_err_type", llvm::Type::getVoidTy( m_Context ), { pI8PtrTy, pI8PtrTy, type_i32() } );
+            llvm::Constant *pFuncNameBits = const_string_bits( "index" );
+            llvm::Constant *pExpectedBits = const_string_bits( "array" );
+            if( !pErr || !pFuncNameBits || !pExpectedBits )
+               return nullptr;
+            llvm::Value *pFuncName = llvm::ConstantExpr::getIntToPtr( pFuncNameBits, pI8PtrTy );
+            llvm::Value *pExpected = llvm::ConstantExpr::getIntToPtr( pExpectedBits, pI8PtrTy );
+            llvm::Value *pBaseType = item_type( pBaseItem );
+            if( !pBaseType )
+               return nullptr;
+            m_Builder.CreateCall( pErr, { pFuncName, pExpected, pBaseType } );
+            llvm::Value *pNilPtr = array_nil_ptr();
+            if( !pNilPtr )
+               return nullptr;
+            m_Builder.CreateBr( pContBB );
+
+            m_Builder.SetInsertPoint( pContBB );
+            auto *pArrPhi = m_Builder.CreatePHI( llvm::PointerType::get( m_Context, 0 ), 2, "arrptrphi" );
+            pArrPhi->addIncoming( pArrPtr, pOkBB );
+            pArrPhi->addIncoming( pNilPtr, pErrBB );
+
+            llvm::Value *pIdxItem = codegen_expr( aIdxs[ i ] );
+            if( !pIdxItem )
+               return nullptr;
+            llvm::Value *pIdxVal = item_to_i64( pIdxItem );
+            if( !pIdxVal )
+               return nullptr;
+
+            llvm::Value *pElemPtr = emit_array_at( pArrPhi, pIdxVal );
+            if( !pElemPtr )
+               return nullptr;
+
+            if( i + 1 == aIdxs.size() )
+               return pElemPtr;
+
+            pBaseItem = m_Builder.CreateLoad( type_do_item(), pElemPtr, "arr.next" );
+         }
+         return nullptr;
+      }
+      case LValue_::is_LValField:
          return nullptr;
       }
 
@@ -1146,6 +1354,103 @@ struct CodeGenerator::Impl
          return codegen_call_expr( pExpr->u.exprCall_.callexpr_ );
       case Expr_::is_ExprParen:
          return codegen_expr( pExpr->u.exprParen_.expr_ );
+      case Expr_::is_ExprIndex:
+      {
+         std::vector<Expr> aIdxs = collect_subscripts( pExpr->u.exprIndex_.subscriptlist_ );
+         if( aIdxs.empty() )
+            return nullptr;
+
+         llvm::Value *pBaseItem = codegen_expr( pExpr->u.exprIndex_.expr_ );
+         if( !pBaseItem )
+            return nullptr;
+
+         for( size_t i = 0; i < aIdxs.size(); ++i )
+         {
+            llvm::Value *pBaseKind = item_kind( pBaseItem );
+            if( !pBaseKind )
+               return nullptr;
+            llvm::Value *pIsArray = m_Builder.CreateICmpEQ( pBaseKind, const_i32( kDoItArray ), "isarray" );
+
+            llvm::Function   *pFun    = m_CurrentFunction;
+            llvm::BasicBlock *pOkBB   = llvm::BasicBlock::Create( m_Context, "idx.ok", pFun );
+            llvm::BasicBlock *pErrBB  = llvm::BasicBlock::Create( m_Context, "idx.err", pFun );
+            llvm::BasicBlock *pContBB = llvm::BasicBlock::Create( m_Context, "idx.cont", pFun );
+            m_Builder.CreateCondBr( pIsArray, pOkBB, pErrBB );
+
+            llvm::Value *pArrPtr = nullptr;
+
+            m_Builder.SetInsertPoint( pOkBB );
+            llvm::Value *pArrBits = item_to_i64( pBaseItem );
+            if( !pArrBits )
+               return nullptr;
+            pArrPtr = m_Builder.CreateIntToPtr( pArrBits, llvm::PointerType::get( m_Context, 0 ), "arrptr" );
+            m_Builder.CreateBr( pContBB );
+
+            m_Builder.SetInsertPoint( pErrBB );
+            llvm::Type          *pI8PtrTy = llvm::PointerType::get( m_Context, 0 );
+            llvm::FunctionCallee pErr =
+                get_rt_func( "do_err_type", llvm::Type::getVoidTy( m_Context ), { pI8PtrTy, pI8PtrTy, type_i32() } );
+            llvm::Constant *pFuncNameBits = const_string_bits( "index" );
+            llvm::Constant *pExpectedBits = const_string_bits( "array" );
+            if( !pErr || !pFuncNameBits || !pExpectedBits )
+               return nullptr;
+            llvm::Value *pFuncName = llvm::ConstantExpr::getIntToPtr( pFuncNameBits, pI8PtrTy );
+            llvm::Value *pExpected = llvm::ConstantExpr::getIntToPtr( pExpectedBits, pI8PtrTy );
+            llvm::Value *pBaseType = item_type( pBaseItem );
+            if( !pBaseType )
+               return nullptr;
+            m_Builder.CreateCall( pErr, { pFuncName, pExpected, pBaseType } );
+            llvm::Value *pNilPtr = array_nil_ptr();
+            if( !pNilPtr )
+               return nullptr;
+            m_Builder.CreateBr( pContBB );
+
+            m_Builder.SetInsertPoint( pContBB );
+            auto *pArrPhi = m_Builder.CreatePHI( llvm::PointerType::get( m_Context, 0 ), 2, "arrptrphi" );
+            pArrPhi->addIncoming( pArrPtr, pOkBB );
+            pArrPhi->addIncoming( pNilPtr, pErrBB );
+
+            llvm::Value *pIdxItem = codegen_expr( aIdxs[ i ] );
+            if( !pIdxItem )
+               return nullptr;
+            llvm::Value *pIdxVal = item_to_i64( pIdxItem );
+            if( !pIdxVal )
+               return nullptr;
+
+            llvm::Value *pElemPtr = emit_array_at( pArrPhi, pIdxVal );
+            if( !pElemPtr )
+               return nullptr;
+
+            if( i + 1 == aIdxs.size() )
+               return m_Builder.CreateLoad( type_do_item(), pElemPtr, "arrval" );
+
+            pBaseItem = m_Builder.CreateLoad( type_do_item(), pElemPtr, "arr.next" );
+         }
+         return nullptr;
+      }
+      case Expr_::is_ExprArray:
+      {
+         std::vector<Expr>    aItems     = collect_expr_list( pExpr->u.exprArray_.exprlistopt_ );
+         llvm::Type          *pArrPtrTy  = llvm::PointerType::get( m_Context, 0 );
+         llvm::Type          *pItemPtrTy = llvm::PointerType::get( m_Context, 0 );
+         llvm::FunctionCallee pNew       = get_rt_func( "do_array_new", pArrPtrTy, { type_i64() } );
+         llvm::FunctionCallee pAt        = get_rt_func( "do_array_at", pItemPtrTy, { pArrPtrTy, type_i64() } );
+         if( !pNew || !pAt )
+            return nullptr;
+
+         llvm::Value *pArr = m_Builder.CreateCall( pNew, { const_i64( ( int64_t ) aItems.size() ) }, "arr" );
+         for( size_t i = 0; i < aItems.size(); ++i )
+         {
+            llvm::Value *pItem = codegen_expr( aItems[ i ] );
+            if( !pItem )
+               return nullptr;
+            llvm::Value *pPtr = m_Builder.CreateCall( pAt, { pArr, const_i64( ( int64_t ) i + 1 ) }, "arr.at" );
+            m_Builder.CreateStore( pItem, pPtr );
+         }
+
+         llvm::Value *pBits = m_Builder.CreatePtrToInt( pArr, type_i64(), "arrbits" );
+         return make_item( const_i32( kDoItArray ), pBits );
+      }
       case Expr_::is_ExprQId:
       {
          QualifiedId pQ = pExpr->u.exprQId_.qualifiedid_;
@@ -1322,6 +1627,168 @@ struct CodeGenerator::Impl
       return true;
    }
 
+   bool codegen_for_stmt( Stmt pStmt )
+   {
+      if( !pStmt || pStmt->kind != Stmt_::is_StmtFor )
+         return false;
+      if( !m_CurrentFunction )
+         return false;
+
+      const char *szName = pStmt->u.stmtFor_.ident_;
+      Expr        pStart = pStmt->u.stmtFor_.expr_1;
+      Expr        pEnd   = pStmt->u.stmtFor_.expr_2;
+      StepOpt     pStep  = pStmt->u.stmtFor_.stepopt_;
+      StmtList    pBody  = pStmt->u.stmtFor_.stmtlist_;
+
+      llvm::Value *pStartItem = codegen_expr( pStart );
+      if( !pStartItem )
+         return false;
+
+      llvm::AllocaInst *pCounterPtr = get_or_create_alloca( szName, type_do_item() );
+      if( !pCounterPtr )
+         return false;
+
+      m_Builder.CreateStore( pStartItem, pCounterPtr );
+
+      llvm::IRBuilder<> oTmp( &m_CurrentFunction->getEntryBlock(), m_CurrentFunction->getEntryBlock().begin() );
+      llvm::AllocaInst *pStepAlloca = oTmp.CreateAlloca( type_i64(), nullptr, "for.step" );
+
+      llvm::Function   *pFun    = m_CurrentFunction;
+      llvm::BasicBlock *pCondBB = llvm::BasicBlock::Create( m_Context, "for.cond", pFun );
+      llvm::BasicBlock *pEndBB  = llvm::BasicBlock::Create( m_Context, "for.endchk", pFun );
+      llvm::BasicBlock *pStepBB = llvm::BasicBlock::Create( m_Context, "for.stepchk", pFun );
+      llvm::BasicBlock *pTestBB = llvm::BasicBlock::Create( m_Context, "for.test", pFun );
+      llvm::BasicBlock *pBodyBB = llvm::BasicBlock::Create( m_Context, "for.body", pFun );
+      llvm::BasicBlock *pIncBB  = llvm::BasicBlock::Create( m_Context, "for.inc", pFun );
+      llvm::BasicBlock *pExitBB = llvm::BasicBlock::Create( m_Context, "for.exit", pFun );
+
+      llvm::Type          *pI8PtrTy = llvm::PointerType::get( m_Context, 0 );
+      llvm::FunctionCallee pErr =
+          get_rt_func( "do_err_type", llvm::Type::getVoidTy( m_Context ), { pI8PtrTy, pI8PtrTy, type_i32() } );
+      llvm::Constant *pFuncNameBits = const_string_bits( "for" );
+      llvm::Constant *pExpectedBits = const_string_bits( "numeric" );
+      llvm::Value    *pFuncName     = llvm::ConstantExpr::getIntToPtr( pFuncNameBits, pI8PtrTy );
+      llvm::Value    *pExpected     = llvm::ConstantExpr::getIntToPtr( pExpectedBits, pI8PtrTy );
+
+      m_Builder.CreateBr( pCondBB );
+
+      m_Builder.SetInsertPoint( pCondBB );
+      llvm::Value *pCounterItem = m_Builder.CreateLoad( type_do_item(), pCounterPtr, szName );
+      llvm::Value *pCounterKind = item_kind( pCounterItem );
+      if( !pCounterKind || !pErr || !pFuncNameBits || !pExpectedBits )
+         return false;
+      llvm::Value *pIsCounterNum =
+          m_Builder.CreateOr( m_Builder.CreateICmpEQ( pCounterKind, const_i32( kDoItInt32 ) ),
+                              m_Builder.CreateICmpEQ( pCounterKind, const_i32( kDoItLong ) ), "for.isnum" );
+
+      llvm::BasicBlock *pErrCounterBB = llvm::BasicBlock::Create( m_Context, "for.err.counter", pFun );
+      m_Builder.CreateCondBr( pIsCounterNum, pEndBB, pErrCounterBB );
+
+      m_Builder.SetInsertPoint( pErrCounterBB );
+      llvm::Value *pCounterType = item_type( pCounterItem );
+      if( !pCounterType )
+         return false;
+      m_Builder.CreateCall( pErr, { pFuncName, pExpected, pCounterType } );
+      m_Builder.CreateBr( pExitBB );
+
+      m_Builder.SetInsertPoint( pEndBB );
+      llvm::Value *pEndItem = codegen_expr( pEnd );
+      if( !pEndItem )
+         return false;
+      llvm::Value *pEndKind = item_kind( pEndItem );
+      if( !pEndKind )
+         return false;
+      llvm::Value *pIsEndNum =
+          m_Builder.CreateOr( m_Builder.CreateICmpEQ( pEndKind, const_i32( kDoItInt32 ) ),
+                              m_Builder.CreateICmpEQ( pEndKind, const_i32( kDoItLong ) ), "for.isendnum" );
+
+      llvm::BasicBlock *pErrEndBB = llvm::BasicBlock::Create( m_Context, "for.err.end", pFun );
+      m_Builder.CreateCondBr( pIsEndNum, pStepBB, pErrEndBB );
+
+      m_Builder.SetInsertPoint( pErrEndBB );
+      llvm::Value *pEndType = item_type( pEndItem );
+      if( !pEndType )
+         return false;
+      m_Builder.CreateCall( pErr, { pFuncName, pExpected, pEndType } );
+      m_Builder.CreateBr( pExitBB );
+
+      m_Builder.SetInsertPoint( pStepBB );
+      if( pStep && pStep->kind == StepOpt_::is_OptStepSome )
+      {
+         llvm::Value *pStepItem = codegen_expr( pStep->u.optStepSome_.expr_ );
+         if( !pStepItem )
+            return false;
+         llvm::Value *pStepKind = item_kind( pStepItem );
+         if( !pStepKind )
+            return false;
+         llvm::Value *pIsStepNum =
+             m_Builder.CreateOr( m_Builder.CreateICmpEQ( pStepKind, const_i32( kDoItInt32 ) ),
+                                 m_Builder.CreateICmpEQ( pStepKind, const_i32( kDoItLong ) ), "for.isstepnum" );
+
+         llvm::BasicBlock *pErrStepBB   = llvm::BasicBlock::Create( m_Context, "for.err.step", pFun );
+         llvm::BasicBlock *pStoreStepBB = llvm::BasicBlock::Create( m_Context, "for.step", pFun );
+         m_Builder.CreateCondBr( pIsStepNum, pStoreStepBB, pErrStepBB );
+
+         m_Builder.SetInsertPoint( pErrStepBB );
+         llvm::Value *pStepType = item_type( pStepItem );
+         if( !pStepType )
+            return false;
+         m_Builder.CreateCall( pErr, { pFuncName, pExpected, pStepType } );
+         m_Builder.CreateBr( pExitBB );
+
+         m_Builder.SetInsertPoint( pStoreStepBB );
+         llvm::Value *pStepVal = item_to_i64( pStepItem );
+         if( !pStepVal )
+            return false;
+         m_Builder.CreateStore( pStepVal, pStepAlloca );
+         m_Builder.CreateBr( pTestBB );
+      }
+      else
+      {
+         m_Builder.CreateStore( const_i64( 1 ), pStepAlloca );
+         m_Builder.CreateBr( pTestBB );
+      }
+
+      m_Builder.SetInsertPoint( pTestBB );
+      llvm::Value *pCounterNow = m_Builder.CreateLoad( type_do_item(), pCounterPtr, szName );
+      llvm::Value *pCounterVal = item_to_i64( pCounterNow );
+      llvm::Value *pEndVal     = item_to_i64( pEndItem );
+      llvm::Value *pStepVal    = m_Builder.CreateLoad( type_i64(), pStepAlloca, "step" );
+      if( !pCounterVal || !pEndVal || !pStepVal )
+         return false;
+
+      llvm::Value *pIsNeg  = m_Builder.CreateICmpSLT( pStepVal, const_i64( 0 ), "for.neg" );
+      llvm::Value *pCondLe = m_Builder.CreateICmpSLE( pCounterVal, pEndVal, "for.le" );
+      llvm::Value *pCondGe = m_Builder.CreateICmpSGE( pCounterVal, pEndVal, "for.ge" );
+      llvm::Value *pCond   = m_Builder.CreateSelect( pIsNeg, pCondGe, pCondLe, "for.cond" );
+      m_Builder.CreateCondBr( pCond, pBodyBB, pExitBB );
+
+      m_Builder.SetInsertPoint( pBodyBB );
+      m_BreakTargets.push_back( pExitBB );
+      m_ContinueTargets.push_back( pIncBB );
+      if( !codegen_stmtlist( pBody ) )
+         return false;
+      m_BreakTargets.pop_back();
+      m_ContinueTargets.pop_back();
+
+      llvm::BasicBlock *pCurBB = m_Builder.GetInsertBlock();
+      if( pCurBB && !pCurBB->getTerminator() )
+         m_Builder.CreateBr( pIncBB );
+
+      m_Builder.SetInsertPoint( pIncBB );
+      llvm::Value *pCounterIncItem = m_Builder.CreateLoad( type_do_item(), pCounterPtr, szName );
+      llvm::Value *pCounterIncVal  = item_to_i64( pCounterIncItem );
+      llvm::Value *pStepIncVal     = m_Builder.CreateLoad( type_i64(), pStepAlloca, "step" );
+      if( !pCounterIncVal || !pStepIncVal )
+         return false;
+      llvm::Value *pNextVal = m_Builder.CreateAdd( pCounterIncVal, pStepIncVal, "for.next" );
+      m_Builder.CreateStore( make_int_item( pNextVal ), pCounterPtr );
+      m_Builder.CreateBr( pCondBB );
+
+      m_Builder.SetInsertPoint( pExitBB );
+      return true;
+   }
+
    bool codegen_do_case_stmt( Stmt pStmt )
    {
       if( !pStmt || pStmt->kind != Stmt_::is_StmtDoCase )
@@ -1399,6 +1866,188 @@ struct CodeGenerator::Impl
       return true;
    }
 
+   bool codegen_switch_stmt( Stmt pStmt )
+   {
+      if( !pStmt || pStmt->kind != Stmt_::is_StmtSwitch )
+         return false;
+      if( !m_CurrentFunction )
+         return false;
+
+      SwitchCond   pCond  = pStmt->u.stmtSwitch_.switchcond_;
+      CaseList     pCases = pStmt->u.stmtSwitch_.caselist_;
+      OtherwiseOpt pOther = pStmt->u.stmtSwitch_.otherwiseopt_;
+
+      if( !pCond || pCond->kind != SwitchCond_::is_SwitchCondExpr )
+         return false;
+
+      llvm::Value *pSwitchItem = codegen_expr( pCond->u.switchCondExpr_.expr_ );
+      if( !pSwitchItem )
+         return false;
+
+      llvm::IRBuilder<> oTmp( &m_CurrentFunction->getEntryBlock(), m_CurrentFunction->getEntryBlock().begin() );
+      llvm::AllocaInst *pSwitchAlloca = oTmp.CreateAlloca( type_do_item(), nullptr, "switch.val" );
+      m_Builder.CreateStore( pSwitchItem, pSwitchAlloca );
+
+      llvm::Function   *pFun     = m_CurrentFunction;
+      llvm::BasicBlock *pTypeBB  = llvm::BasicBlock::Create( m_Context, "switch.type", pFun );
+      llvm::BasicBlock *pExitBB  = llvm::BasicBlock::Create( m_Context, "switch.exit", pFun );
+      llvm::BasicBlock *pOtherBB = pOther && pOther->kind == OtherwiseOpt_::is_OptOtherwiseSome
+                                       ? llvm::BasicBlock::Create( m_Context, "switch.other", pFun )
+                                       : nullptr;
+
+      std::vector<CaseClause>         aCases;
+      std::vector<llvm::BasicBlock *> aCaseBBs;
+      std::vector<llvm::BasicBlock *> aCmpBBs;
+
+      while( pCases && pCases->kind == CaseList_::is_ListCaseCons )
+      {
+         CaseClause pClause = pCases->u.listCaseCons_.caseclause_;
+         aCases.push_back( pClause );
+         aCaseBBs.push_back( llvm::BasicBlock::Create( m_Context, "switch.case", pFun ) );
+         aCmpBBs.push_back( llvm::BasicBlock::Create( m_Context, "switch.cmp", pFun ) );
+         pCases = pCases->u.listCaseCons_.caselist_;
+      }
+
+      m_Builder.CreateBr( pTypeBB );
+
+      m_Builder.SetInsertPoint( pTypeBB );
+      llvm::Value *pSwitchNow  = m_Builder.CreateLoad( type_do_item(), pSwitchAlloca, "switch" );
+      llvm::Value *pSwitchKind = item_kind( pSwitchNow );
+      if( !pSwitchKind )
+         return false;
+
+      llvm::Value *pIsNum =
+          m_Builder.CreateOr( m_Builder.CreateICmpEQ( pSwitchKind, const_i32( kDoItInt32 ) ),
+                              m_Builder.CreateICmpEQ( pSwitchKind, const_i32( kDoItLong ) ), "switch.isnum" );
+      llvm::Value *pIsStr = m_Builder.CreateICmpEQ( pSwitchKind, const_i32( kDoItString ), "switch.isstr" );
+      llvm::Value *pIsOk  = m_Builder.CreateOr( pIsNum, pIsStr, "switch.isok" );
+
+      llvm::Type          *pI8PtrTy = llvm::PointerType::get( m_Context, 0 );
+      llvm::FunctionCallee pErr =
+          get_rt_func( "do_err_type", llvm::Type::getVoidTy( m_Context ), { pI8PtrTy, pI8PtrTy, type_i32() } );
+      llvm::Constant *pFuncNameBits = const_string_bits( "switch" );
+      llvm::Constant *pExpectedBits = const_string_bits( "string or numeric" );
+      if( !pErr || !pFuncNameBits || !pExpectedBits )
+         return false;
+      llvm::Value *pFuncName = llvm::ConstantExpr::getIntToPtr( pFuncNameBits, pI8PtrTy );
+      llvm::Value *pExpected = llvm::ConstantExpr::getIntToPtr( pExpectedBits, pI8PtrTy );
+
+      llvm::BasicBlock *pErrBB      = llvm::BasicBlock::Create( m_Context, "switch.err", pFun );
+      llvm::BasicBlock *pCmpStartBB = aCmpBBs.empty() ? ( pOtherBB ? pOtherBB : pExitBB ) : aCmpBBs.front();
+      m_Builder.CreateCondBr( pIsOk, pCmpStartBB, pErrBB );
+
+      m_Builder.SetInsertPoint( pErrBB );
+      llvm::Value *pSwitchType = item_type( pSwitchNow );
+      if( !pSwitchType )
+         return false;
+      m_Builder.CreateCall( pErr, { pFuncName, pExpected, pSwitchType } );
+      m_Builder.CreateBr( pExitBB );
+
+      llvm::FunctionCallee pStrcmp = get_rt_func( "strcmp", type_i32(), { pI8PtrTy, pI8PtrTy } );
+      if( !pStrcmp )
+         return false;
+      llvm::Constant *pEmptyBits = const_string_bits( "" );
+      if( !pEmptyBits )
+         return false;
+      llvm::Constant *pEmptyPtr = llvm::ConstantExpr::getIntToPtr( pEmptyBits, pI8PtrTy );
+
+      for( size_t i = 0; i < aCases.size(); ++i )
+      {
+         CaseClause pClause = aCases[ i ];
+         if( !pClause || pClause->kind != CaseClause_::is_CaseClauseItem )
+            return false;
+
+         CaseValue pVal = pClause->u.caseClauseItem_.casevalue_;
+         if( !pVal )
+            return false;
+
+         m_Builder.SetInsertPoint( aCmpBBs[ i ] );
+
+         llvm::Value *pSwitchCur   = m_Builder.CreateLoad( type_do_item(), pSwitchAlloca, "switch" );
+         llvm::Value *pSwitchKind2 = item_kind( pSwitchCur );
+         if( !pSwitchKind2 )
+            return false;
+
+         llvm::Value *pMatch = nullptr;
+         if( pVal->kind == CaseValue_::is_CaseValueInt )
+         {
+            int64_t      nCase = std::stoll( pVal->u.caseValueInt_.intlit_ );
+            llvm::Value *pIsNum2 =
+                m_Builder.CreateOr( m_Builder.CreateICmpEQ( pSwitchKind2, const_i32( kDoItInt32 ) ),
+                                    m_Builder.CreateICmpEQ( pSwitchKind2, const_i32( kDoItLong ) ), "switch.num" );
+            llvm::Value *pSwitchInt = item_to_i64( pSwitchCur );
+            if( !pSwitchInt )
+               return false;
+            llvm::Value *pEq = m_Builder.CreateICmpEQ( pSwitchInt, const_i64( nCase ), "switch.eq" );
+            pMatch           = m_Builder.CreateAnd( pIsNum2, pEq, "switch.match" );
+         }
+         else if( pVal->kind == CaseValue_::is_CaseValueStr )
+         {
+            const char *szRaw = get_napis_cstr( pVal->u.caseValueStr_.napis_ );
+            if( !szRaw )
+               return false;
+            std::string     oText = decode_string_literal( szRaw );
+            llvm::Constant *pBits = const_string_bits( oText.c_str() );
+            if( !pBits )
+               return false;
+            llvm::Value *pCasePtr = llvm::ConstantExpr::getIntToPtr( pBits, pI8PtrTy );
+
+            llvm::Value *pIsStr2     = m_Builder.CreateICmpEQ( pSwitchKind2, const_i32( kDoItString ), "switch.str" );
+            llvm::Value *pSwitchBits = item_to_i64( pSwitchCur );
+            if( !pSwitchBits )
+               return false;
+            llvm::Value *pSwitchNull = m_Builder.CreateICmpEQ( pSwitchBits, const_i64( 0 ), "switch.null" );
+            llvm::Value *pSwitchPtr  = m_Builder.CreateIntToPtr( pSwitchBits, pI8PtrTy, "switch.ptr" );
+            llvm::Value *pSwitchSafe = m_Builder.CreateSelect( pSwitchNull, pEmptyPtr, pSwitchPtr, "switch.safe" );
+            llvm::Value *pCmp        = m_Builder.CreateCall( pStrcmp, { pSwitchSafe, pCasePtr }, "strcmp" );
+            llvm::Value *pEq         = m_Builder.CreateICmpEQ( pCmp, const_i32( 0 ), "switch.eq" );
+            pMatch                   = m_Builder.CreateAnd( pIsStr2, pEq, "switch.match" );
+         }
+         else
+         {
+            return false;
+         }
+
+         llvm::BasicBlock *pNextCmp = ( i + 1 < aCmpBBs.size() ) ? aCmpBBs[ i + 1 ] : ( pOtherBB ? pOtherBB : pExitBB );
+         m_Builder.CreateCondBr( pMatch, aCaseBBs[ i ], pNextCmp );
+      }
+
+      m_BreakTargets.push_back( pExitBB );
+      for( size_t i = 0; i < aCases.size(); ++i )
+      {
+         CaseClause pClause = aCases[ i ];
+         StmtList   pStmts  = pClause->u.caseClauseItem_.stmtlist_;
+
+         m_Builder.SetInsertPoint( aCaseBBs[ i ] );
+         if( !codegen_stmtlist( pStmts ) )
+         {
+            m_BreakTargets.pop_back();
+            return false;
+         }
+
+         if( !m_Builder.GetInsertBlock()->getTerminator() )
+         {
+            if( i + 1 < aCaseBBs.size() )
+               m_Builder.CreateBr( aCaseBBs[ i + 1 ] );
+            else
+               m_Builder.CreateBr( pExitBB );
+         }
+      }
+      m_BreakTargets.pop_back();
+
+      if( pOtherBB )
+      {
+         m_Builder.SetInsertPoint( pOtherBB );
+         if( !codegen_stmtlist( pOther->u.optOtherwiseSome_.stmtlist_ ) )
+            return false;
+         if( !m_Builder.GetInsertBlock()->getTerminator() )
+            m_Builder.CreateBr( pExitBB );
+      }
+
+      m_Builder.SetInsertPoint( pExitBB );
+      return true;
+   }
+
    bool codegen_stmt( Stmt pStmt )
    {
       if( !pStmt )
@@ -1435,6 +2084,10 @@ struct CodeGenerator::Impl
          return codegen_if_stmt( pStmt );
       case Stmt_::is_StmtDoWhile:
          return codegen_do_while_stmt( pStmt );
+      case Stmt_::is_StmtFor:
+         return codegen_for_stmt( pStmt );
+      case Stmt_::is_StmtSwitch:
+         return codegen_switch_stmt( pStmt );
       case Stmt_::is_StmtDoCase:
          return codegen_do_case_stmt( pStmt );
       case Stmt_::is_StmtExit:
