@@ -1,5 +1,5 @@
 /*
- * dory main.dor --bin main
+ * main.dor
  */
 
 PROCEDURE Main()
