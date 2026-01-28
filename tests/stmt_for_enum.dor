@@ -1,6 +1,7 @@
 /*
- * stmt_for_each.dor
+ * stmt_for_enum.dor
  * for each / in / exit / loop / descend examples
+ *
  */
 
 procedure main()

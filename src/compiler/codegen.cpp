@@ -16,6 +16,7 @@
 #include <optional>
 #include <string>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 #include <llvm/ADT/ArrayRef.h>
@@ -68,6 +69,7 @@ struct CodeGenerator::Impl
    std::vector<llvm::BasicBlock *>               m_BreakTargets;
    std::vector<llvm::BasicBlock *>               m_ContinueTargets;
    llvm::AllocaInst                             *m_ArrayNilTmp = nullptr;
+   std::map<std::string, llvm::AllocaInst *>     m_EnumLocals;
 
    llvm::Type *type_i64()
    {
@@ -612,6 +614,102 @@ struct CodeGenerator::Impl
       return ( !pTail || pTail->kind == SubscriptListTail_::is_ListSubscriptTailEmpty );
    }
 
+   static bool equals_ignore_case( const char *szLeft, const char *szRight )
+   {
+      if( !szLeft || !szRight )
+         return false;
+      while( *szLeft && *szRight )
+      {
+         char a = ( char ) std::toupper( ( unsigned char ) *szLeft );
+         char b = ( char ) std::toupper( ( unsigned char ) *szRight );
+         if( a != b )
+            return false;
+         ++szLeft;
+         ++szRight;
+      }
+      return *szLeft == *szRight;
+   }
+
+   llvm::AllocaInst *get_enum_alloca( const char *szName ) const
+   {
+      auto it = m_EnumLocals.find( szName ? szName : "" );
+      return it != m_EnumLocals.end() ? it->second : nullptr;
+   }
+
+   llvm::Value *codegen_enum_accessor( Expr pObjExpr, const char *szMeth )
+   {
+      if( !pObjExpr || !szMeth )
+         return nullptr;
+      if( pObjExpr->kind != Expr_::is_ExprQId )
+         return nullptr;
+
+      QualifiedId pQ = pObjExpr->u.exprQId_.qualifiedid_;
+      if( !pQ || pQ->kind != QualifiedId_::is_QualifiedIdSingle )
+         return nullptr;
+
+      const char *szName = pQ->u.qualifiedIdSingle_.ident_;
+      llvm::AllocaInst *pEnumAlloca = get_enum_alloca( szName );
+      if( !pEnumAlloca )
+         return nullptr;
+
+      llvm::Value *pEnumPtr = m_Builder.CreateLoad( llvm::PointerType::get( m_Context, 0 ), pEnumAlloca, "enum" );
+      llvm::Type  *pEnumPtrTy = llvm::PointerType::get( m_Context, 0 );
+      llvm::Type  *pItemPtrTy = llvm::PointerType::get( m_Context, 0 );
+
+      if( equals_ignore_case( szMeth, "enumIndex" ) || equals_ignore_case( szMeth, "__enumIndex" ) )
+      {
+         llvm::FunctionCallee pFn = get_rt_func( "do_enum_index", type_i64(), { pEnumPtrTy } );
+         if( !pFn )
+            return nullptr;
+         llvm::Value *pIdx = m_Builder.CreateCall( pFn, { pEnumPtr }, "enum.idx" );
+         return make_int_item( pIdx );
+      }
+      if( equals_ignore_case( szMeth, "enumIsFirst" ) || equals_ignore_case( szMeth, "__enumIsFirst" ) )
+      {
+         llvm::FunctionCallee pFn = get_rt_func( "do_enum_isfirst", type_i32(), { pEnumPtrTy } );
+         if( !pFn )
+            return nullptr;
+         llvm::Value *pVal  = m_Builder.CreateCall( pFn, { pEnumPtr }, "enum.first" );
+         llvm::Value *pBool = m_Builder.CreateICmpNE( pVal, const_i32( 0 ), "enum.firstb" );
+         return make_bool_item( pBool );
+      }
+      if( equals_ignore_case( szMeth, "enumIsLast" ) || equals_ignore_case( szMeth, "__enumIsLast" ) )
+      {
+         llvm::FunctionCallee pFn = get_rt_func( "do_enum_islast", type_i32(), { pEnumPtrTy } );
+         if( !pFn )
+            return nullptr;
+         llvm::Value *pVal  = m_Builder.CreateCall( pFn, { pEnumPtr }, "enum.last" );
+         llvm::Value *pBool = m_Builder.CreateICmpNE( pVal, const_i32( 0 ), "enum.lastb" );
+         return make_bool_item( pBool );
+      }
+      if( equals_ignore_case( szMeth, "enumValue" ) || equals_ignore_case( szMeth, "__enumValue" ) )
+      {
+         llvm::FunctionCallee pFn = get_rt_func( "do_enum_value_ptr", pItemPtrTy, { pEnumPtrTy } );
+         if( !pFn )
+            return nullptr;
+         llvm::Value *pPtr = m_Builder.CreateCall( pFn, { pEnumPtr }, "enum.valptr" );
+         return m_Builder.CreateLoad( type_do_item(), pPtr, "enum.val" );
+      }
+      if( equals_ignore_case( szMeth, "enumBase" ) || equals_ignore_case( szMeth, "__enumBase" ) )
+      {
+         llvm::FunctionCallee pFn = get_rt_func( "do_enum_base", pEnumPtrTy, { pEnumPtrTy } );
+         if( !pFn )
+            return nullptr;
+         llvm::Value *pArrPtr = m_Builder.CreateCall( pFn, { pEnumPtr }, "enum.base" );
+         llvm::Value *pBits   = m_Builder.CreatePtrToInt( pArrPtr, type_i64(), "enum.basebits" );
+         return make_item( const_i32( kDoItArray ), pBits );
+      }
+      if( equals_ignore_case( szMeth, "enumKey" ) || equals_ignore_case( szMeth, "__enumKey" ) ||
+          equals_ignore_case( szMeth, "enumStart" ) || equals_ignore_case( szMeth, "__enumStart" ) ||
+          equals_ignore_case( szMeth, "enumSkip" ) || equals_ignore_case( szMeth, "__enumSkip" ) ||
+          equals_ignore_case( szMeth, "enumStop" ) || equals_ignore_case( szMeth, "__enumStop" ) )
+      {
+         return make_item_const( kDoItNil, const_i64( 0 ) );
+      }
+
+      return nullptr;
+   }
+
    std::vector<Expr> collect_subscripts( SubscriptList pList )
    {
       std::vector<Expr> aIdxs;
@@ -688,6 +786,38 @@ struct CodeGenerator::Impl
          }
       }
       return aItems;
+   }
+
+   std::vector<Ident> collect_foreach_vars( ForEachVars pVars )
+   {
+      std::vector<Ident> aVars;
+      if( pVars && pVars->kind == ForEachVars_::is_ForEachVarsMain )
+      {
+         aVars.push_back( pVars->u.forEachVarsMain_.ident_ );
+         ForEachVarsTail pTail = pVars->u.forEachVarsMain_.foreachvarstail_;
+         while( pTail && pTail->kind == ForEachVarsTail_::is_ListForEachVarsTailCons )
+         {
+            aVars.push_back( pTail->u.listForEachVarsTailCons_.ident_ );
+            pTail = pTail->u.listForEachVarsTailCons_.foreachvarstail_;
+         }
+      }
+      return aVars;
+   }
+
+   std::vector<Expr> collect_foreach_exprs( ForEachExprs pExprs )
+   {
+      std::vector<Expr> aExprs;
+      if( pExprs && pExprs->kind == ForEachExprs_::is_ForEachExprsMain )
+      {
+         aExprs.push_back( pExprs->u.forEachExprsMain_.expr_ );
+         ForEachExprsTail pTail = pExprs->u.forEachExprsMain_.foreachexprstail_;
+         while( pTail && pTail->kind == ForEachExprsTail_::is_ListForEachExprsTailCons )
+         {
+            aExprs.push_back( pTail->u.listForEachExprsTailCons_.expr_ );
+            pTail = pTail->u.listForEachExprsTailCons_.foreachexprstail_;
+         }
+      }
+      return aExprs;
    }
 
    llvm::Value *codegen_lvalue_ptr( LValue pLVal )
@@ -1354,6 +1484,18 @@ struct CodeGenerator::Impl
          return codegen_call_expr( pExpr->u.exprCall_.callexpr_ );
       case Expr_::is_ExprParen:
          return codegen_expr( pExpr->u.exprParen_.expr_ );
+      case Expr_::is_ExprMethodCall:
+      {
+         Expr  pObjExpr = pExpr->u.exprMethodCall_.expr_;
+         Ident szMeth   = pExpr->u.exprMethodCall_.ident_;
+         return codegen_enum_accessor( pObjExpr, szMeth );
+      }
+      case Expr_::is_ExprFieldAccess:
+      {
+         Expr  pObjExpr = pExpr->u.exprFieldAccess_.expr_;
+         Ident szMeth   = pExpr->u.exprFieldAccess_.ident_;
+         return codegen_enum_accessor( pObjExpr, szMeth );
+      }
       case Expr_::is_ExprIndex:
       {
          std::vector<Expr> aIdxs = collect_subscripts( pExpr->u.exprIndex_.subscriptlist_ );
@@ -1789,6 +1931,217 @@ struct CodeGenerator::Impl
       return true;
    }
 
+   bool codegen_for_each_stmt( Stmt pStmt )
+   {
+      if( !pStmt || pStmt->kind != Stmt_::is_StmtForEach )
+         return false;
+      if( !m_CurrentFunction )
+         return false;
+
+      std::vector<Ident> aVars  = collect_foreach_vars( pStmt->u.stmtForEach_.foreachvars_ );
+      std::vector<Expr>  aExprs = collect_foreach_exprs( pStmt->u.stmtForEach_.foreachexprs_ );
+      if( aVars.empty() || aExprs.empty() )
+         return false;
+      if( aVars.size() != aExprs.size() )
+         return false;
+
+      const bool lDescend = pStmt->u.stmtForEach_.foreachdescopt_ &&
+                            pStmt->u.stmtForEach_.foreachdescopt_->kind == ForEachDescOpt_::is_ForEachDescOptSome;
+
+      const size_t nCount = aVars.size();
+
+      std::vector<llvm::Value *> aArrPtrs;
+      std::vector<llvm::Value *> aLens;
+      std::vector<llvm::AllocaInst *> aEnumPtrs;
+      std::vector<std::pair<std::string, llvm::AllocaInst *>> aPrevEnums;
+      aArrPtrs.reserve( nCount );
+      aLens.reserve( nCount );
+      aEnumPtrs.reserve( nCount );
+      aPrevEnums.reserve( nCount );
+
+      llvm::PointerType *pArrPtrTy = llvm::PointerType::get( m_Context, 0 );
+      llvm::FunctionCallee pLen = get_rt_func( "do_array_len", type_i64(), { pArrPtrTy } );
+      llvm::FunctionCallee pEnumNew = get_rt_func( "do_enum_new_array", pArrPtrTy, { pArrPtrTy, type_i32() } );
+      llvm::FunctionCallee pEnumFree = get_rt_func( "do_enum_free", llvm::Type::getVoidTy( m_Context ), { pArrPtrTy } );
+      llvm::FunctionCallee pEnumSet = get_rt_func( "do_enum_set_index", llvm::Type::getVoidTy( m_Context ),
+                                                   { pArrPtrTy, type_i64() } );
+      if( !pLen )
+         return false;
+      if( !pEnumNew || !pEnumFree || !pEnumSet )
+         return false;
+
+      llvm::IRBuilder<> oTmp( &m_CurrentFunction->getEntryBlock(), m_CurrentFunction->getEntryBlock().begin() );
+
+      for( size_t i = 0; i < nCount; ++i )
+      {
+         llvm::Value *pItem = codegen_expr( aExprs[ i ] );
+         if( !pItem )
+            return false;
+         llvm::Value *pKind = item_kind( pItem );
+         if( !pKind )
+            return false;
+
+         llvm::Value *pIsArray = m_Builder.CreateICmpEQ( pKind, const_i32( kDoItArray ), "isarray" );
+         llvm::Function   *pFun    = m_CurrentFunction;
+         llvm::BasicBlock *pOkBB   = llvm::BasicBlock::Create( m_Context, "fe.ok", pFun );
+         llvm::BasicBlock *pErrBB  = llvm::BasicBlock::Create( m_Context, "fe.err", pFun );
+         llvm::BasicBlock *pContBB = llvm::BasicBlock::Create( m_Context, "fe.cont", pFun );
+         m_Builder.CreateCondBr( pIsArray, pOkBB, pErrBB );
+
+         llvm::Value *pArrPtr = nullptr;
+
+         m_Builder.SetInsertPoint( pOkBB );
+         llvm::Value *pBits = item_to_i64( pItem );
+         if( !pBits )
+            return false;
+         pArrPtr = m_Builder.CreateIntToPtr( pBits, pArrPtrTy, "arrptr" );
+         m_Builder.CreateBr( pContBB );
+
+         m_Builder.SetInsertPoint( pErrBB );
+         llvm::Type          *pI8PtrTy = llvm::PointerType::get( m_Context, 0 );
+         llvm::FunctionCallee pErr =
+             get_rt_func( "do_err_type", llvm::Type::getVoidTy( m_Context ), { pI8PtrTy, pI8PtrTy, type_i32() } );
+         llvm::Constant *pFuncNameBits = const_string_bits( "for each" );
+         llvm::Constant *pExpectedBits = const_string_bits( "array" );
+         if( !pErr || !pFuncNameBits || !pExpectedBits )
+            return false;
+         llvm::Value *pFuncName = llvm::ConstantExpr::getIntToPtr( pFuncNameBits, pI8PtrTy );
+         llvm::Value *pExpected = llvm::ConstantExpr::getIntToPtr( pExpectedBits, pI8PtrTy );
+         llvm::Value *pTypeVal  = item_type( pItem );
+         if( !pTypeVal )
+            return false;
+         m_Builder.CreateCall( pErr, { pFuncName, pExpected, pTypeVal } );
+         llvm::Value *pNilPtr = llvm::ConstantPointerNull::get( pArrPtrTy );
+         m_Builder.CreateBr( pContBB );
+
+         m_Builder.SetInsertPoint( pContBB );
+         auto *pArrPhi = m_Builder.CreatePHI( pArrPtrTy, 2, "arrptrphi" );
+         pArrPhi->addIncoming( pArrPtr, pOkBB );
+         pArrPhi->addIncoming( pNilPtr, pErrBB );
+
+         llvm::Value *pLenVal = m_Builder.CreateCall( pLen, { pArrPhi }, "arr.len" );
+         aArrPtrs.push_back( pArrPhi );
+         aLens.push_back( pLenVal );
+
+         llvm::AllocaInst *pEnumAlloca = oTmp.CreateAlloca( pArrPtrTy, nullptr, "foreach.enum" );
+         llvm::Value *pEnumPtr = m_Builder.CreateCall( pEnumNew, { pArrPhi, const_i32( lDescend ? 1 : 0 ) }, "enum" );
+         m_Builder.CreateStore( pEnumPtr, pEnumAlloca );
+         aEnumPtrs.push_back( pEnumAlloca );
+
+         std::string oName = aVars[ i ] ? aVars[ i ] : "";
+         auto it = m_EnumLocals.find( oName );
+         aPrevEnums.push_back( { oName, it != m_EnumLocals.end() ? it->second : nullptr } );
+         m_EnumLocals[ oName ] = pEnumAlloca;
+      }
+
+      llvm::Value *pMinLen = aLens[ 0 ];
+      for( size_t i = 1; i < nCount; ++i )
+      {
+         llvm::Value *pIsLt = m_Builder.CreateICmpSLT( aLens[ i ], pMinLen, "len.lt" );
+         pMinLen            = m_Builder.CreateSelect( pIsLt, aLens[ i ], pMinLen, "len.min" );
+      }
+
+      llvm::AllocaInst *pIdxAlloca = oTmp.CreateAlloca( type_i64(), nullptr, "foreach.idx" );
+      llvm::Value      *pStartIdx  = lDescend ? pMinLen : const_i64( 1 );
+      llvm::Value      *pEndIdx    = lDescend ? const_i64( 1 ) : pMinLen;
+      llvm::Value      *pStepVal   = lDescend ? const_i64( -1 ) : const_i64( 1 );
+      m_Builder.CreateStore( pStartIdx, pIdxAlloca );
+
+      std::vector<llvm::AllocaInst *> aSaved;
+      aSaved.reserve( nCount );
+      for( size_t i = 0; i < nCount; ++i )
+      {
+         llvm::AllocaInst *pVar = get_or_create_alloca( aVars[ i ], type_do_item() );
+         if( !pVar )
+            return false;
+         llvm::AllocaInst *pSave = oTmp.CreateAlloca( type_do_item(), nullptr, "foreach.save" );
+         llvm::Value      *pOld  = m_Builder.CreateLoad( type_do_item(), pVar );
+         m_Builder.CreateStore( pOld, pSave );
+         aSaved.push_back( pSave );
+      }
+
+      llvm::Function   *pFun    = m_CurrentFunction;
+      llvm::BasicBlock *pCondBB = llvm::BasicBlock::Create( m_Context, "foreach.cond", pFun );
+      llvm::BasicBlock *pBodyBB = llvm::BasicBlock::Create( m_Context, "foreach.body", pFun );
+      llvm::BasicBlock *pIncBB  = llvm::BasicBlock::Create( m_Context, "foreach.inc", pFun );
+      llvm::BasicBlock *pExitBB = llvm::BasicBlock::Create( m_Context, "foreach.exit", pFun );
+
+      m_Builder.CreateBr( pCondBB );
+
+      m_Builder.SetInsertPoint( pCondBB );
+      llvm::Value *pIdxCur = m_Builder.CreateLoad( type_i64(), pIdxAlloca, "idx" );
+      llvm::Value *pCond   = lDescend ? m_Builder.CreateICmpSGE( pIdxCur, pEndIdx, "idx.ge" )
+                                      : m_Builder.CreateICmpSLE( pIdxCur, pEndIdx, "idx.le" );
+      m_Builder.CreateCondBr( pCond, pBodyBB, pExitBB );
+
+      m_Builder.SetInsertPoint( pBodyBB );
+      for( size_t i = 0; i < nCount; ++i )
+      {
+         llvm::Value *pEnumPtr = m_Builder.CreateLoad( pArrPtrTy, aEnumPtrs[ i ], "enum" );
+         m_Builder.CreateCall( pEnumSet, { pEnumPtr, pIdxCur } );
+      }
+      for( size_t i = 0; i < nCount; ++i )
+      {
+         llvm::Value *pElemPtr = emit_array_at( aArrPtrs[ i ], pIdxCur );
+         if( !pElemPtr )
+            return false;
+         llvm::Value *pVal = m_Builder.CreateLoad( type_do_item(), pElemPtr, "elem" );
+         llvm::AllocaInst *pVar = get_or_create_alloca( aVars[ i ], type_do_item() );
+         if( !pVar )
+            return false;
+         m_Builder.CreateStore( pVal, pVar );
+      }
+
+      m_BreakTargets.push_back( pExitBB );
+      m_ContinueTargets.push_back( pIncBB );
+      if( !codegen_stmtlist( pStmt->u.stmtForEach_.stmtlist_ ) )
+         return false;
+      m_BreakTargets.pop_back();
+      m_ContinueTargets.pop_back();
+
+      llvm::BasicBlock *pCurBB = m_Builder.GetInsertBlock();
+      if( pCurBB && !pCurBB->getTerminator() )
+         m_Builder.CreateBr( pIncBB );
+
+      m_Builder.SetInsertPoint( pIncBB );
+      for( size_t i = 0; i < nCount; ++i )
+      {
+         llvm::Value *pElemPtr = emit_array_at( aArrPtrs[ i ], pIdxCur );
+         if( !pElemPtr )
+            return false;
+         llvm::AllocaInst *pVar = get_or_create_alloca( aVars[ i ], type_do_item() );
+         if( !pVar )
+            return false;
+         llvm::Value *pVal = m_Builder.CreateLoad( type_do_item(), pVar );
+         m_Builder.CreateStore( pVal, pElemPtr );
+      }
+
+      llvm::Value *pNextIdx = m_Builder.CreateAdd( pIdxCur, pStepVal, "idx.next" );
+      m_Builder.CreateStore( pNextIdx, pIdxAlloca );
+      m_Builder.CreateBr( pCondBB );
+
+      m_Builder.SetInsertPoint( pExitBB );
+      for( size_t i = 0; i < nCount; ++i )
+      {
+         llvm::AllocaInst *pVar = get_or_create_alloca( aVars[ i ], type_do_item() );
+         llvm::Value      *pOld = m_Builder.CreateLoad( type_do_item(), aSaved[ i ] );
+         m_Builder.CreateStore( pOld, pVar );
+      }
+      for( size_t i = 0; i < nCount; ++i )
+      {
+         llvm::Value *pEnumPtr = m_Builder.CreateLoad( pArrPtrTy, aEnumPtrs[ i ], "enum" );
+         m_Builder.CreateCall( pEnumFree, { pEnumPtr } );
+      }
+      for( const auto &oPrev : aPrevEnums )
+      {
+         if( oPrev.second )
+            m_EnumLocals[ oPrev.first ] = oPrev.second;
+         else
+            m_EnumLocals.erase( oPrev.first );
+      }
+      return true;
+   }
+
    bool codegen_do_case_stmt( Stmt pStmt )
    {
       if( !pStmt || pStmt->kind != Stmt_::is_StmtDoCase )
@@ -2086,6 +2439,8 @@ struct CodeGenerator::Impl
          return codegen_do_while_stmt( pStmt );
       case Stmt_::is_StmtFor:
          return codegen_for_stmt( pStmt );
+      case Stmt_::is_StmtForEach:
+         return codegen_for_each_stmt( pStmt );
       case Stmt_::is_StmtSwitch:
          return codegen_switch_stmt( pStmt );
       case Stmt_::is_StmtDoCase:

@@ -7,7 +7,6 @@
 #include <stdio.h>
 
 // printf()  : Writes a formatted string to the console
-// TODO:       Handles only one argument, no formatting.
 // Idea:       Implement full printf-style formatting.
 // Priority:   Low.
 DO_FUNC( PRINTF )
@@ -20,16 +19,8 @@ DO_FUNC( PRINTF )
    }
    else
    {
-      int     lOkay  = 0;
-      int64_t nValue = do_parni( pVm, 1, &lOkay );
-      if( lOkay )
-      {
-         fprintf( stdout, "%" PRId64 "\n", nValue );
-      }
-      else
-      {
-         do_err_args( "printf" );
-      }
+      do_err_args( "printf" );
    }
+
    do_retnil( pVm );
 }

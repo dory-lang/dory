@@ -13,7 +13,7 @@ procedure main()
       if n == 2
          loop
       endif
-      printf( n )
+      printf( "tick" )
    enddo
 
    n := 0
@@ -22,18 +22,7 @@ procedure main()
       if n == 4
          exit
       endif
-      printf( n )
+      printf( "tick" )
    enddo
 
 return
-
-ast.cpp
-ast.hpp
-codegen.cpp
-codegen.hpp
-main.cpp
-sema.cpp
-sema.hpp
-types.cpp
-types.hpp
-domk2.c

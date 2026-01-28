@@ -9,6 +9,7 @@
 #include <string.h>
 
 /* ----------------------------------------------------------------------------
+   memory_utils - Extended memory allocation utilities
    ------------------------------------------------------------------------- */
 // do_xalloc: Allocates memory and returns NULL on failure.
 void *do_xalloc( size_t nSize )

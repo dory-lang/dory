@@ -39,6 +39,51 @@ static const char *ast_enum_name( EnumDecl pEnum )
    return "";
 }
 
+static void ast_dump_enum_item( EnumItem pItem, int nDepth )
+{
+   if( !pItem || pItem->kind != EnumItem_::is_EnumItemDecl )
+      return;
+
+   ast_indent( nDepth );
+   fputs( "EnumItem: ", stdout );
+   fputs( ast_ident_or_empty( pItem->u.enumItemDecl_.ident_ ), stdout );
+
+   EnumValueOpt pVal = pItem->u.enumItemDecl_.enumvalueopt_;
+   if( pVal && pVal->kind == EnumValueOpt_::is_OptEnumValueSome )
+   {
+      fputs( " = ", stdout );
+      fputs( ast_ident_or_empty( pVal->u.optEnumValueSome_.intlit_ ), stdout );
+   }
+   fputc( '\n', stdout );
+}
+
+static void ast_dump_enum_listopt( EnumListOpt pList, int nDepth )
+{
+   if( !pList || pList->kind == EnumListOpt_::is_OptEnumListEmpty )
+      return;
+
+   if( pList->kind == EnumListOpt_::is_OptEnumListSome )
+   {
+      ast_dump_enum_item( pList->u.optEnumListSome_.enumitem_, nDepth );
+      EnumListTail pTail = pList->u.optEnumListSome_.enumlisttail_;
+      while( pTail )
+      {
+         if( pTail->kind == EnumListTail_::is_ListEnumTailCons )
+         {
+            ast_dump_enum_item( pTail->u.listEnumTailCons_.enumitem_, nDepth );
+            pTail = pTail->u.listEnumTailCons_.enumlisttail_;
+            continue;
+         }
+         if( pTail->kind == EnumListTail_::is_ListEnumTailSep )
+         {
+            pTail = nullptr;
+            continue;
+         }
+         break;
+      }
+   }
+}
+
 static const char *ast_class_name( ClassDecl pClass )
 {
    if( !pClass )
@@ -64,6 +109,16 @@ static void ast_dump_topdecl( TopDecl pTopDecl, int nDepth )
    case TopDecl_::is_TopDeclEnum:
       ast_indent( nDepth );
       printf( "EnumDecl: %s\n", ast_enum_name( pTopDecl->u.topDeclEnum_.enumdecl_ ) );
+      if( pTopDecl->u.topDeclEnum_.enumdecl_ )
+      {
+         EnumDecl pEnum = pTopDecl->u.topDeclEnum_.enumdecl_;
+         EnumListOpt pList = nullptr;
+         if( pEnum->kind == EnumDecl_::is_EnumDeclNamed )
+            pList = pEnum->u.enumDeclNamed_.enumlistopt_;
+         else if( pEnum->kind == EnumDecl_::is_EnumDeclAnon )
+            pList = pEnum->u.enumDeclAnon_.enumlistopt_;
+         ast_dump_enum_listopt( pList, nDepth + 1 );
+      }
       break;
    case TopDecl_::is_TopDeclClass:
       ast_indent( nDepth );

@@ -1,0 +1,23 @@
+/*
+ * stmt_enum.dor
+ * enum / examples
+ *
+ * NOTE: Enum values as constants are not wired in codegen yet.
+ * This file documents syntax and parsing for now.
+ */
+
+enum Colors
+   Red
+   Green
+   Blue
+endenum
+
+enum
+   One   := 1
+   Two   := 2
+   Three := 3
+endenum
+
+procedure main()
+   printf( "enum syntax parsed (no runtime constants yet)" )
+return
